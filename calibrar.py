@@ -6,6 +6,10 @@ import json
 import math
 from pathlib import Path
 
+# Resíduo RMS máximo dos cantos em relação à homografia do plano. Detecções corretas
+# ficam em 0,6-1,2 px (a distorção da lente entra nesse valor); erros passam de 10 px.
+MAX_RESIDUO_HOMOGRAFIA_PX = 2.0
+
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -58,6 +62,44 @@ def main():
         if not cv.imwrite(str(path), image):
             raise RuntimeError(f"Não foi possível salvar {path}")
 
+    def detect(gray):
+        # Reflexos e logotipos nos cantos do tabuleiro atrapalham o detector. Em uma cópia
+        # reduzida ele funciona melhor; cornerSubPix refina os cantos na escala original.
+        # Cada candidato passa por uma conferência: os cantos de um plano devem seguir uma
+        # homografia. Um canto preso em um reflexo faz o resíduo crescer e o candidato cai.
+        flags = cv.CALIB_CB_ADAPTIVE_THRESH | cv.CALIB_CB_NORMALIZE_IMAGE | cv.CALIB_CB_FILTER_QUADS
+        candidates = []
+        for scale in (1.0, 0.75, 0.5, 0.35):
+            small = gray if scale == 1.0 else cv.resize(
+                gray, None, fx=scale, fy=scale, interpolation=cv.INTER_AREA)
+            found, corners = cv.findChessboardCorners(small, pattern, flags)
+            if found:
+                candidates.append(((corners + 0.5) / scale - 0.5, f"classico_escala_{scale:g}"))
+        found, corners = cv.findChessboardCornersSB(gray, pattern, cv.CALIB_CB_NORMALIZE_IMAGE)
+        if found:
+            candidates.append((corners, "SB"))
+        for corners, method in candidates:
+            corners = cv.cornerSubPix(
+                gray, corners.astype(np.float32).reshape(-1, 1, 2), (11, 11), (-1, -1),
+                (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+            homography, _ = cv.findHomography(obj[:, :2], corners, 0)
+            fitted = cv.perspectiveTransform(obj[None, :, :2], homography)[0]
+            residual = np.sqrt(np.mean(np.sum((fitted - corners.reshape(-1, 2)) ** 2, axis=1)))
+            if residual <= MAX_RESIDUO_HOMOGRAFIA_PX:
+                return corners, method
+        return None, None
+
+    def straightness(points):
+        # RMS da distância de cada canto à reta ajustada em sua linha ou coluna do tabuleiro.
+        # A perspectiva preserva retas; sobra só a curvatura da lente e o ruído do detector.
+        grid = points.reshape(args.linhas, args.colunas, 2)
+        distances = []
+        for line in list(grid) + list(grid.transpose(1, 0, 2)):
+            centered = line - line.mean(axis=0)
+            normal = np.linalg.svd(centered)[2][1]
+            distances.extend(centered @ normal)
+        return float(np.sqrt(np.mean(np.square(distances))))
+
     def read_views(folder, group):
         nonlocal image_size
         if not folder.is_dir():
@@ -78,27 +120,14 @@ def main():
             if size != image_size:
                 raise ValueError(f"Resolução diferente em {path}: {size}, esperada {image_size}")
             gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            found, corners = cv.findChessboardCorners(
-                gray, pattern, cv.CALIB_CB_ADAPTIVE_THRESH | cv.CALIB_CB_NORMALIZE_IMAGE)
-            method = "classico"
-            if not found:
-                # O detector SB pode recuperar tabuleiros inclinados que o clássico não detecta.
-                found, corners = cv.findChessboardCornersSB(gray, pattern, cv.CALIB_CB_NORMALIZE_IMAGE)
-                method = "SB"
-            if not found:
-                enhanced = cv.createCLAHE(clipLimit=2, tileGridSize=(8, 8)).apply(gray)
-                found, corners = cv.findChessboardCornersSB(
-                    enhanced, pattern, cv.CALIB_CB_NORMALIZE_IMAGE | cv.CALIB_CB_EXHAUSTIVE | cv.CALIB_CB_ACCURACY)
-                method = "SB_com_CLAHE"
-            if not found:
-                rejected.append({"imagem": str(path), "motivo": "Tabuleiro não detectado"})
+            corners, method = detect(gray)
+            if corners is None:
+                rejected.append({"imagem": str(path),
+                                 "motivo": "Tabuleiro não detectado ou cantos fora da homografia"})
                 continue
-            corners = cv.cornerSubPix(
-                gray, corners, (11, 11), (-1, -1),
-                (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_MAX_ITER, 30, 0.001))
             marked = image.copy()
             cv.drawChessboardCorners(marked, pattern, corners, True)
-            write_image(args.saida / f"cantos_{group}_{path.name}.png", marked)
+            write_image(args.saida / f"cantos_{group}_{path.stem}.jpg", marked)
             views.append((path, corners))
             detections.append({"imagem": str(path), "conjunto": group, "metodo": method})
             print(f"Cantos detectados ({method}): {path.name}", flush=True)
@@ -116,9 +145,18 @@ def main():
     if any(hashlib.sha256(p.read_bytes()).digest() in calibration_hashes for p, _ in validation):
         raise ValueError("Uma imagem de validação é uma cópia de uma imagem de calibração.")
 
-    flags = (cv.CALIB_FIX_K2 | cv.CALIB_FIX_K3) if args.modelo_distorcao == "radial1" else 0
+    model_flags = {"radial1": cv.CALIB_FIX_K2 | cv.CALIB_FIX_K3, "completo": 0}
+    flags = model_flags[args.modelo_distorcao]
     rms, matrix, distortion, rvecs, tvecs = cv.calibrateCamera(
         [obj.copy() for _ in calibration], [c for _, c in calibration], image_size, None, None, flags=flags)
+    # Ajusta também o outro modelo, para justificar a escolha no relatório.
+    models = {}
+    for name, model_flag in model_flags.items():
+        model_rms, model_matrix, model_dist, _, _ = cv.calibrateCamera(
+            [obj.copy() for _ in calibration], [c for _, c in calibration], image_size, None, None,
+            flags=model_flag)
+        models[name] = {"rms_calibracao_px": float(model_rms), "K": model_matrix.tolist(),
+                        "distorcao_k1_k2_p1_p2_k3": model_dist.ravel().tolist()}
     new_matrix, roi = cv.getOptimalNewCameraMatrix(matrix, distortion, image_size, 1, image_size)
     np.savez(args.saida / "calibracao.npz", K=matrix, dist=distortion, K_corrigida=new_matrix,
              tamanho_imagem=image_size, rvecs=np.asarray(rvecs), tvecs=np.asarray(tvecs))
@@ -132,6 +170,7 @@ def main():
         "rms_calibracao_px": float(rms), "calibracao": [], "validacao": [],
         "imagens_rejeitadas": rejected,
         "deteccoes": detections,
+        "comparacao_modelos": models,
     }
     for (path, measured), rvec, tvec in zip(calibration, rvecs, tvecs):
         predicted, _ = cv.projectPoints(obj, rvec, tvec, matrix, distortion)
@@ -161,13 +200,33 @@ def main():
         errors = np.linalg.norm(predicted[test_indices] - measured[test_indices], axis=1)
         all_errors.extend(errors.tolist())
         rotation, _ = cv.Rodrigues(rvec)
+
+        # Cubo com Z != 0 apoiado no tabuleiro. O sinal de Z depende da ordem dos cantos
+        # devolvida pelo detector; o topo fica sempre do lado da câmera.
+        camera_z = -(rotation.T @ tvec).ravel()[2]
+        side = min(args.colunas, args.linhas) - 3
+        base = np.array([[1, 1, 0], [1 + side, 1, 0], [1 + side, 1 + side, 0], [1, 1 + side, 0]],
+                        np.float64) * square_size
+        cube = np.vstack((base, base + [0, 0, np.sign(camera_z) * side * square_size]))
+        cube_px, _ = cv.projectPoints(cube, rvec, tvec, matrix, distortion)
+        cube_px = cube_px.reshape(-1, 2)
+
+        undistorted = cv.undistortPoints(measured.reshape(-1, 1, 2), matrix, distortion, P=matrix)
         summary["validacao"].append({
             "imagem": str(path), "n_pontos_pose": len(pose_indices), "n_pontos_teste": len(test_indices),
             "erro_medio_px": float(errors.mean()), "rms_px": float(np.sqrt(np.mean(errors ** 2))),
             "erro_maximo_px": float(errors.max()), "R": rotation.tolist(), f"t_{unit}": tvec.ravel().tolist(),
+            "retitude_original_px": straightness(measured),
+            "retitude_corrigida_px": straightness(undistorted.reshape(-1, 2)),
+            "cubo": [{f"xyz_{unit}": p.tolist(), "uv_previsto_px": q.tolist()} for p, q in zip(cube, cube_px)],
         })
         image = cv.imread(str(path))
         overlay = image.copy()
+        v = np.rint(cube_px).astype(np.int32)
+        cv.polylines(overlay, [v[:4]], True, (0, 200, 0), 2)
+        for i in range(4):
+            cv.line(overlay, tuple(v[i]), tuple(v[i + 4]), (255, 0, 0), 2)
+        cv.polylines(overlay, [v[4:]], True, (0, 0, 255), 2)
         for index in test_indices:
             x, y, z = obj[index]
             u, v = predicted[index]
@@ -179,15 +238,15 @@ def main():
             cv.circle(overlay, observed, 6, (0, 255, 0), 2)
             cv.drawMarker(overlay, projected, (0, 0, 255), cv.MARKER_CROSS, 10, 2)
             cv.line(overlay, observed, projected, (255, 0, 0), 1)
-        cv.putText(overlay, "Verde: observado | vermelho: projetado", (20, 35),
-                   cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        write_image(args.saida / f"projecao_{path.name}.png", overlay)
+        cv.putText(overlay, "Circulo verde: observado | cruz vermelha: projetado | cubo: Z != 0", (20, 35),
+                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        write_image(args.saida / f"projecao_{path.stem}.jpg", overlay)
         corrected = cv.undistort(image, matrix, distortion, None, new_matrix)
         # Não recorta a ROI: pixels continuam no referencial de K_corrigida.
         comparison = np.hstack((image, corrected))
         for x in range(0, comparison.shape[1], 80):
             cv.line(comparison, (x, 0), (x, comparison.shape[0] - 1), (0, 255, 255), 1)
-        write_image(args.saida / f"distorcao_{path.name}.png", comparison)
+        write_image(args.saida / f"distorcao_{path.stem}.jpg", comparison)
 
     with (args.saida / "projecoes.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)

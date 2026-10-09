@@ -1,82 +1,81 @@
 # Calibração de câmera e projeção de pontos 3D
 
-**Dupla:** [nomes]  
-**Disciplina:** Visão Computacional — UFPR  
-**Data:** [data]  
-**Git:** [URL do repositório]
+**Dupla:** Gustavo Jakobi (GRR20221253) e Bruno Crestani (GRR20221240)
+**Disciplina:** Visão Computacional — UFPR, 2026
+**Git:** https://github.com/BrunoCrestani/syncingCamera
 
-> Modelo de relatório: preencher com medidas e resultados reais; remover esta observação antes de entregar.
+## Método
 
-## Objetivo e fundamentação
+Calibramos a câmera principal (1×) de um iPhone 16 Pro (lente de 6,765 mm, f/1.78, equivalente a 24 mm) pelo método de Zhang [1], com o OpenCV [2]. O tabuleiro do VRI tem 8 × 8 quadrados, ou seja, 7 × 7 cantos internos. Não medimos o lado do quadrado; por isso, as coordenadas 3D estão em **unidades de quadrado**. Isso não altera K nem a distorção.
 
-Calibramos [câmera e lente] para estimar a matriz intrínseca K e a distorção da lente, corrigir fotografias e conferir a projeção de pontos com coordenadas conhecidas no espaço 3D.
+As 19 fotos (4536 × 8064, retrato) foram reduzidas para 1134 × 2016, com o mesmo fator e sem recorte. Quatro fotos foram reservadas para validação antes da calibração. O detector encontrou o tabuleiro em 14 fotos: 10 de calibração e 4 de validação. As outras 5 têm o tabuleiro cortado pela borda da foto ou reflexos fortes.
 
-A calibração com padrão plano em poses variadas se apoia no método de Zhang (2000). K contém as focais fx e fy e o ponto principal (cx, cy), em pixels. Os parâmetros extrínsecos R e t transformam o referencial do tabuleiro para o da câmera. Sem distorção, a projeção é `s [u,v,1]ᵀ = K [R|t] [X,Y,Z,1]ᵀ`. O modelo utilizado inclui distorção radial e tangencial. Consultamos [indicar os tutoriais efetivamente lidos] e os materiais da disciplina.
+O modelo de projeção é `s [u, v, 1]ᵀ = K [R | t] [X, Y, Z, 1]ᵀ`, com distorção radial e tangencial aplicada às coordenadas normalizadas. O mundo fica no tabuleiro: origem no primeiro canto, Z = 0 no plano do tabuleiro.
 
-## Aquisição e procedimento
+1. `findChessboardCorners` e `cornerSubPix` localizam os cantos. Uma homografia confere cada detecção e rejeita cantos presos em reflexos.
+2. `calibrateCamera` estima K e a distorção. Usamos o modelo `radial1` (k1, p1, p2; k2 = k3 = 0).
+3. `getOptimalNewCameraMatrix` (α = 1) e `undistort` removem a distorção.
+4. Nas fotos de validação, `solvePnP` estima R e t com metade dos cantos (padrão xadrez). `projectPoints` projeta a outra metade, que comparamos com os cantos detectados. Também projetamos um cubo com Z ≠ 0.
 
-Usamos [modelo da câmera], lente [identificação], resolução [largura × altura] pixels e [configuração de foco/zoom]. O tabuleiro tinha [colunas × linhas] cantos internos e quadrados de [lado] mm. Coletamos [N] imagens para calibração e [M] outras para validação, variando [inclinação, distância e posição]. O detector aceitou [N válidas] e [M válidas]; [número e motivos] foram rejeitadas.
+## Resultados
 
-Detectamos e refinamos os cantos com `findChessboardCorners` e `cornerSubPix`. Estimamos K e a distorção com `calibrateCamera` e removemos a distorção com `getOptimalNewCameraMatrix` e `undistort`. Versão do OpenCV: [versão de resumo.json].
-
-## Matrizes e correção de distorção
-
-Matriz intrínseca K, em pixels:
+RMS de reprojeção da calibração: **0,60 px**.
 
 ```text
-[ fx   0  cx ]
-[  0  fy  cy ]
-[  0   0   1 ]
+K = [ 1451,95     0      571,29 ]      (k1, k2, p1, p2, k3) =
+    [    0     1453,02   976,75 ]      (0,136; 0; -0,0098; 0,0006; 0)
+    [    0        0         1   ]
 ```
 
-Substituir pelos valores numéricos de `resultados/resumo.json`.
+`fx ≈ fy` indica pixels quadrados, e o centro óptico fica perto do centro da imagem (567, 1008). Pela focal do EXIF, esperávamos fx ≈ 1400 px; a diferença de 4 % é compatível com o valor nominal de 24 mm. O modelo completo reduz o RMS só para 0,56 px, mas dá k3 = −3,33: um sinal de sobreajuste, porque o tabuleiro nunca chega às bordas da imagem.
 
-Coeficientes `[k1, k2, p1, p2, k3]`: [valores]. RMS da calibração: [valor] px.
+O iPhone já corrige a maior parte da distorção por software, então a correção é pequena. Para medi-la, ajustamos uma reta a cada linha e coluna de cantos e calculamos a distância RMS dos cantos à reta. A perspectiva preserva retas; a curvatura restante vem da lente e do ruído do detector.
 
-Para a imagem [nome], os extrínsecos foram:
+| Foto de validação | Retitude original (px) | Retitude corrigida (px) |
+| --- | --- | --- |
+| IMG_8157 | 0,32 | 0,11 |
+| IMG_8165 | 0,64 | 0,62 |
+| IMG_8171 | 0,30 | 0,24 |
+| IMG_8174 | 0,69 | 0,57 |
 
-```text
-R = [valores de resumo.json]
-t = [valores] mm
-```
+![Original (esquerda) e sem distorção (direita)](resultados/distorcao_IMG_8157.jpg)
 
-![Imagem original à esquerda e corrigida à direita](resultados/distorcao_NOME_DA_FOTO.jpg.png)
+**Figura 1.** IMG_8157 original e corrigida. As linhas amarelas verticais servem de referência.
 
-**Figura 1.** [Descrever o que se observa nas linhas/bordas reais do tabuleiro, incluindo se a diferença é pequena.] A imagem corrigida utiliza a matriz `K_corrigida`, [valores se necessários], e mantém o enquadramento completo, podendo apresentar bordas pretas.
+### Projeção de pontos 3D
 
-## Conferência da projeção 3D → 2D
-
-Definimos os cantos do tabuleiro por `P = (coluna × lado, linha × lado, 0)` mm. São pontos 3D no plano Z = 0. Nas imagens reservadas, estimamos a pose com parte dos cantos usando `solvePnP` e projetamos os demais com `projectPoints`, incluindo distorção. Os pontos usados para conferir não foram usados para estimar essa pose. As coordenadas observadas são do detector, na fotografia original.
-
-| Imagem | X, Y, Z (mm) | u, v previstos (px) | u, v observados (px) | Erro (px) |
+| Foto | Pontos de teste | Erro médio (px) | RMS (px) | Erro máximo (px) |
 | --- | --- | --- | --- | --- |
-| [foto 1] | [valores] | [valores] | [valores] | [valor] |
-| [foto 1] | [valores] | [valores] | [valores] | [valor] |
-| [foto 2] | [valores] | [valores] | [valores] | [valor] |
-| [foto 2] | [valores] | [valores] | [valores] | [valor] |
+| IMG_8157 | 24 | 0,20 | 0,22 | 0,42 |
+| IMG_8165 | 24 | 1,01 | 1,25 | 3,65 |
+| IMG_8171 | 24 | 0,54 | 0,59 | 0,93 |
+| IMG_8174 | 24 | 0,90 | 0,97 | 1,65 |
 
-Preencher com 5–10 pontos de `projecoes.csv` em pelo menos duas imagens. Erro por ponto: distância euclidiana entre pixel previsto e observado. RMS: raiz da média dos erros ao quadrado.
+RMS de validação em todos os 96 pontos: **0,85 px**. Exemplos (tabela completa em `resultados/projecoes.csv`):
 
-![Observado em verde e projetado em vermelho](resultados/projecao_NOME_DA_FOTO.jpg.png)
-
-**Figura 2.** Projeções em [foto 1]. Incluir também uma segunda vista ou uma montagem com ambas.
-
-| Vista reservada | Pontos conferidos | Erro médio (px) | RMS (px) | Erro máximo (px) |
+| Foto | X, Y, Z (quadrados) | u, v previstos (px) | u, v observados (px) | Erro (px) |
 | --- | --- | --- | --- | --- |
-| [foto 1] | [N] | [valor] | [valor] | [valor] |
-| [foto 2] | [N] | [valor] | [valor] | [valor] |
+| IMG_8171 | 1, 0, 0 | 634,3; 630,9 | 634,5; 630,2 | 0,68 |
+| IMG_8171 | 3, 2, 0 | 690,3; 850,5 | 690,1; 850,2 | 0,33 |
+| IMG_8171 | 5, 4, 0 | 741,2; 1046,6 | 740,5; 1046,3 | 0,74 |
+| IMG_8174 | 1, 0, 0 | 500,0; 773,1 | 500,5; 772,8 | 0,59 |
+| IMG_8174 | 3, 2, 0 | 543,7; 914,7 | 544,0; 915,9 | 1,23 |
+| IMG_8174 | 5, 4, 0 | 597,5; 1088,5 | 597,8; 1089,0 | 0,66 |
 
-RMS global da validação: [valor de rms_validacao_px] px. [Se fizeram a extensão com Z diferente de zero, descrever as medidas físicas, o referencial e os erros dos pontos externos.]
+O cubo tem base de (1, 1, 0) a (5, 5, 0) e altura de 4 quadrados, do lado da câmera. Por exemplo, em IMG_8171 o vértice (1, 1, −4) é projetado em (603,1; 767,5). Os vértices de cima não têm referência medida, então a conferência do cubo é visual: as arestas verticais convergem para o ponto de fuga esperado e o topo fica maior que a base nas vistas inclinadas.
 
-## Discussão e conclusão
+![Cantos e cubo projetados](resultados/projecao_IMG_8174.jpg)
 
-[Explicar se os pontos projetados coincidiram com os observados, comparando calibração e validação, e se a correção reduziu a curvatura observada. Relatar limitações concretas: nitidez, diversidade de poses, planicidade e precisão das medidas do tabuleiro.]
+**Figura 2.** IMG_8174: cantos observados (círculo verde), projetados (cruz vermelha) e cubo projetado.
 
-A avaliação mede erro em pixels; não estima diretamente precisão métrica 3D. Os pontos de teste estão [no plano / também fora do plano, se medidos]. A pose e os pixels observados dependem do detector de cantos, o que limita a independência da referência experimental.
+## Discussão
+
+Os pontos projetados ficam, em média, a menos de 1 px dos cantos detectados em fotos que não entraram na calibração. O maior erro é em IMG_8165, que tem reflexos fortes sobre o tabuleiro. A correção da distorção reduziu a curvatura das linhas em todas as fotos de validação, mas pouco, porque o iPhone já entrega a foto quase sem distorção.
+
+Limitações: poucas vistas de calibração muito inclinadas (2 de 10 passam de 30°; 4 ficam abaixo de 10°), o tabuleiro nunca perto das bordas da imagem e o lado do quadrado sem medida. Os erros estão em pixels e não medem a precisão 3D em milímetros.
 
 ## Referências
 
-1. OpenCV. *Camera Calibration (Python).* https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html. Acesso em: [data real da leitura].
-2. OpenCV. *Camera calibration with OpenCV.* https://docs.opencv.org/4.x/d4/d94/tutorial_camera_calibration.html. Acesso em: [data real da leitura].
-3. Zhang, Z. *A Flexible New Technique for Camera Calibration.* IEEE TPAMI, 22(11), 1330–1334, 2000. DOI: 10.1109/34.888718.
-4. Todt, E. *Camera Model and Calibration.* Slides da disciplina, UFPR, 2026.
+1. Zhang, Z. *A Flexible New Technique for Camera Calibration.* IEEE TPAMI, 22(11), 1330–1334, 2000.
+2. OpenCV. *Camera Calibration.* https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html
+3. Todt, E. *Camera Model and Calibration.* Slides da disciplina, UFPR, 2026.
