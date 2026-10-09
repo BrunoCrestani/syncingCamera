@@ -1,0 +1,17 @@
+[
+  {
+    "imagem": "02_IMG_8157.png",
+    "rms_retitude_original_px": 0.3164883314613733,
+    "rms_retitude_corrigida_px_K_preservada": 0.10176428513319212
+  },
+  {
+    "imagem": "16_IMG_8171.png",
+    "rms_retitude_original_px": 0.2941579459448849,
+    "rms_retitude_corrigida_px_K_preservada": 0.20900468687179605
+  },
+  {
+    "imagem": "19_IMG_8174.png",
+    "rms_retitude_original_px": 0.6922202283289042,
+    "rms_retitude_corrigida_px_K_preservada": 0.6040017265780296
+  }
+]
