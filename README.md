@@ -2,7 +2,7 @@
 
 Gustavo Jakobi (GRR20221253) e Bruno Crestani (GRR20221240).
 
-Calibração da câmera principal de um iPhone 16 Pro com o tabuleiro do VRI (8 × 8 quadrados, 7 × 7 cantos internos). O projeto estima a matriz intrínseca K e a distorção, remove a distorção das fotos e confere a projeção de pontos 3D em fotos que não entraram na calibração. O relatório está em [RELATORIO.md](RELATORIO.md).
+Calibração da câmera principal de um iPhone 16 Pro com o tabuleiro do VRI (8 × 8 quadrados, 7 × 7 cantos internos). O projeto estima a matriz intrínseca K e a distorção, remove a distorção das fotos e confere a projeção de pontos 3D em fotos que não entraram na calibração. O relatório está em [RELATORIO.pdf](RELATORIO.pdf); o fonte LaTeX está em `relatorio/`.
 
 ## Estrutura
 

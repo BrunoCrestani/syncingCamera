@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 .DS_Store
 dados_preparados/
+relatorio/*.aux
+relatorio/*.log
+relatorio/*.out
+relatorio/*.fls
+relatorio/*.fdb_latexmk
+relatorio/*.pdf
